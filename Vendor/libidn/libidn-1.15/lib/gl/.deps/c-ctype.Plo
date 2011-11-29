@@ -1,0 +1,7 @@
+c-ctype.lo c-ctype.o: c-ctype.c ../../config.h c-ctype.h stdbool.h
+
+../../config.h:
+
+c-ctype.h:
+
+stdbool.h:
