@@ -169,6 +169,34 @@ static const int ddLogLevel = LOG_LEVEL_VERBOSE;
 {
 	DDLogVerbose(@"%@: %@", THIS_FILE, THIS_METHOD);
     self.viewController.statusLabel.text = @"XMPP authenticated";
+
+    
+    //envoyer un message ICI !! :D    
+    NSString *messageStr = @"salut les coupains";
+    
+    if([messageStr length] > 0)
+    {
+        NSXMLElement *body = [NSXMLElement elementWithName:@"body"];
+        [body setStringValue:messageStr];
+        
+        NSXMLElement *message = [NSXMLElement elementWithName:@"message"];
+        [message addAttributeWithName:@"xmlns" stringValue:@"http://www.facebook.com/xmpp/messages"];
+        [message addAttributeWithName:@"to" stringValue:@"-582418645@chat.facebook.com"];
+        [message addChild:body];
+
+        [xmppStream sendElement:message];
+
+    }
+    
+//    NSXMLElement *body = [NSXMLElement elementWithName:@"body"];
+//    [body setStringValue:@"lalalala"];
+//    
+//    NSXMLElement *message = [NSXMLElement elementWithName:@"message"];
+//    [message addAttributeWithName:@"type" stringValue:@"chat"];
+//    [message addAttributeWithName:@"to" stringValue:[jid full]];
+//    [message addChild:body];
+//    
+//    [xmppStream sendElement:message];
 }
 
 - (void)xmppStream:(XMPPStream *)sender didNotAuthenticate:(NSXMLElement *)error
