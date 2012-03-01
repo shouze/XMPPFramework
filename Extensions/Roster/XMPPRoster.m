@@ -3,6 +3,10 @@
 #import "XMPPLogging.h"
 #import "XMPPFramework.h"
 
+#if ! __has_feature(objc_arc)
+#warning This file must be compiled with ARC. Use -fobjc-arc flag (or convert project to ARC).
+#endif
+
 // Log levels: off, error, warn, info, verbose
 // Log flags: trace
 #if DEBUG
@@ -15,6 +19,7 @@ enum XMPPRosterConfig
 {
 	kAutoFetchRoster = 1 << 0,                   // If set, we automatically fetch roster after authentication
 	kAutoAcceptKnownPresenceSubscriptionRequests = 1 << 1, // See big description in header file... :D
+	kRosterlessOperation = 1 << 2,
 };
 enum XMPPRosterFlags
 {
@@ -57,7 +62,7 @@ enum XMPPRosterFlags
 	{
 		if ([storage configureWithParent:self queue:moduleQueue])
 		{
-			xmppRosterStorage = [storage retain];
+			xmppRosterStorage = storage;
 		}
 		else
 		{
@@ -101,12 +106,6 @@ enum XMPPRosterFlags
 	[super deactivate];
 }
 
-- (void)dealloc
-{
-	[xmppRosterStorage release];
-	[earlyPresenceElements release];
-	[super dealloc];
-}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 #pragma mark Internal
@@ -128,7 +127,7 @@ enum XMPPRosterFlags
 {
 	// Note: The xmppRosterStorage variable is read-only (set in the init method)
 	
-	return [[xmppRosterStorage retain] autorelease];
+	return xmppRosterStorage;
 }
 
 - (BOOL)autoFetchRoster
@@ -187,6 +186,38 @@ enum XMPPRosterFlags
 			config |= kAutoAcceptKnownPresenceSubscriptionRequests;
 		else
 			config &= ~kAutoAcceptKnownPresenceSubscriptionRequests;
+	};
+	
+	if (dispatch_get_current_queue() == moduleQueue)
+		block();
+	else
+		dispatch_async(moduleQueue, block);
+}
+
+- (BOOL)allowRosterlessOperation
+{
+	__block BOOL result = NO;
+	
+	dispatch_block_t block = ^{
+		result = (config & kRosterlessOperation) ? YES : NO;
+	};
+	
+	if (dispatch_get_current_queue() == moduleQueue)
+		block();
+	else
+		dispatch_sync(moduleQueue, block);
+	
+	return result;
+}
+
+- (void)setAllowRosterlessOperation:(BOOL)flag
+{
+	dispatch_block_t block = ^{
+		
+		if (flag)
+			config |= kRosterlessOperation;
+		else
+			config &= ~kRosterlessOperation;
 	};
 	
 	if (dispatch_get_current_queue() == moduleQueue)
@@ -353,6 +384,26 @@ enum XMPPRosterFlags
 	[xmppStream sendElement:iq];
 }
 
+- (void)subscribePresenceToUser:(XMPPJID *)jid
+{
+	// This is a public method, so it may be invoked on any thread/queue.
+	
+	if (jid == nil) return;
+	
+	XMPPJID *myJID = xmppStream.myJID;
+	
+	if ([myJID isEqualToJID:jid options:XMPPJIDCompareBare])
+	{
+		XMPPLogInfo(@"%@: %@ - Ignoring request to subscribe presence to myself", [self class], THIS_METHOD);
+		return;
+	}
+	
+	// <presence to='bareJID' type='subscribe'/>
+	
+	XMPPPresence *presence = [XMPPPresence presenceWithType:@"subscribe" to:[jid bareJID]];
+	[xmppStream sendElement:presence];
+}
+
 - (void)unsubscribePresenceFromUser:(XMPPJID *)jid
 {
 	// This is a public method, so it may be invoked on any thread/queue.
@@ -466,13 +517,11 @@ enum XMPPRosterFlags
 {
 	// This is a public method, so it may be invoked on any thread/queue.
 	
-	dispatch_block_t block = ^{
-		NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+	dispatch_block_t block = ^{ @autoreleasepool {
 		
 		if ([self requestedRoster])
 		{
 			// We've already requested the roster from the server.
-			[pool drain];
 			return;
 		}
 		
@@ -489,9 +538,7 @@ enum XMPPRosterFlags
 		[xmppStream sendElement:iq];
 		
 		[self setRequestedRoster:YES];
-		
-		[pool drain];
-	};
+	}};
 	
 	if (dispatch_get_current_queue() == moduleQueue)
 		block();
@@ -576,7 +623,7 @@ enum XMPPRosterFlags
 	
 	XMPPLogTrace();
 	
-	if (![self hasRoster])
+	if (![self hasRoster] && ![self allowRosterlessOperation])
 	{
 		// We received a presence notification,
 		// but we don't have a roster to apply it to yet.

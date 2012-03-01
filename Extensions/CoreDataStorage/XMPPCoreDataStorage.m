@@ -8,9 +8,13 @@
 #import <objc/runtime.h>
 #import <libkern/OSAtomic.h>
 
+#if ! __has_feature(objc_arc)
+#warning This file must be compiled with ARC. Use -fobjc-arc flag (or convert project to ARC).
+#endif
+
 // Log levels: off, error, warn, info, verbose
 #if DEBUG
-  static const int xmppLogLevel = XMPP_LOG_LEVEL_VERBOSE;
+  static const int xmppLogLevel = XMPP_LOG_LEVEL_WARN;
 #else
   static const int xmppLogLevel = XMPP_LOG_LEVEL_WARN;
 #endif
@@ -97,7 +101,7 @@ static NSMutableSet *databaseFileNames;
 {
 	// Override me, if needed, to provide customized behavior.
 	// 
-	// If you are using a database file with non-persistent data (e.g. for memory optimization purposes on iOS),
+	// If you are using a database file with pure non-persistent data (e.g. for memory optimization purposes on iOS),
 	// you may want to delete the database file if it already exists on disk.
 	// 
 	// If this instance was created via initWithDatabaseFilename, then the storePath parameter will be non-nil.
@@ -182,6 +186,11 @@ static NSMutableSet *databaseFileNames;
 	// For example, you may want to perform cleanup of any non-persistent data before you start using the database.
 }
 
+- (void)didSaveManagedObjectContext
+{
+	// Override me if you need to do anything special after changes have been saved to disk.
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 #pragma mark Setup
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -217,11 +226,11 @@ static NSMutableSet *databaseFileNames;
 		
 		if (![[self class] registerDatabaseFileName:databaseFileName])
 		{
-			[self dealloc];
 			return nil;
 		}
 		
 		[self commonInit];
+		NSAssert(storageQueue != NULL, @"Subclass forgot to invoke [super commonInit]");
 	}
 	return self;
 }
@@ -230,9 +239,8 @@ static NSMutableSet *databaseFileNames;
 {
 	if ((self = [super init]))
 	{
-		
-		
 		[self commonInit];
+		NSAssert(storageQueue != NULL, @"Subclass forgot to invoke [super commonInit]");
 	}
 	return self;
 }
@@ -305,34 +313,31 @@ static NSMutableSet *databaseFileNames;
 
 - (XMPPJID *)myJIDForXMPPStream:(XMPPStream *)stream
 {
+	if (stream == nil) return nil;
+	
 	__block XMPPJID *result = nil;
 	
-	dispatch_block_t block = ^{
-		NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+	dispatch_block_t block = ^{ @autoreleasepool {
 		
-		NSNumber *key = [NSNumber numberWithPtr:stream];
+		NSNumber *key = [NSNumber numberWithPtr:(__bridge void *)stream];
 		
 		result = (XMPPJID *)[myJidCache objectForKey:key];
 		if (!result)
 		{
 			result = [stream myJID];
-			
 			if (result)
 			{
 				[myJidCache setObject:result forKey:key];
 			}
 		}
-		
-		[result retain];
-		[pool drain];
-	};
+	}};
 	
 	if (dispatch_get_current_queue() == storageQueue)
 		block();
 	else
 		dispatch_sync(storageQueue, block);
 	
-	return [result autorelease];
+	return result;
 }
 
 - (void)updateJidCache:(NSNotification *)notification
@@ -342,10 +347,9 @@ static NSMutableSet *databaseFileNames;
 	
 	XMPPStream *stream = (XMPPStream *)[notification object];
 	
-	dispatch_async(storageQueue, ^{
-		NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+	dispatch_async(storageQueue, ^{ @autoreleasepool {
 		
-		NSNumber *key = [NSNumber numberWithPtr:stream];
+		NSNumber *key = [NSNumber numberWithPtr:(__bridge void *)stream];
 		if ([myJidCache objectForKey:key])
 		{
 			XMPPJID *newMyJID = [stream myJID];
@@ -356,8 +360,7 @@ static NSMutableSet *databaseFileNames;
 				[myJidCache removeObjectForKey:key];
 		}
 		
-		[pool drain];
-	});
+	}});
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -397,18 +400,19 @@ static NSMutableSet *databaseFileNames;
 	// This is a public method.
 	// It may be invoked on any thread/queue.
 	
-	dispatch_block_t block = ^{
+	__block NSManagedObjectModel *result = nil;
+	
+	dispatch_block_t block = ^{ @autoreleasepool {
 		
 		if (managedObjectModel)
 		{
+			result = managedObjectModel;
 			return;
 		}
 		
-		NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
-		
-		XMPPLogVerbose(@"%@: Creating managedObjectModel", [self class]);
-		
 		NSString *momName = [self managedObjectModelName];
+		
+		XMPPLogVerbose(@"%@: Creating managedObjectModel (%@)", [self class], momName);
 		
 		NSString *momPath = [[NSBundle mainBundle] pathForResource:momName ofType:@"mom"];
 		if (momPath == nil)
@@ -430,15 +434,15 @@ static NSMutableSet *databaseFileNames;
 			XMPPLogWarn(@"%@: Couldn't find managedObjectModel file - %@", [self class], momName);
 		}
 		
-		[pool drain];
-	};
+		result = managedObjectModel;
+	}};
 	
 	if (dispatch_get_current_queue() == storageQueue)
 		block();
 	else
 		dispatch_sync(storageQueue, block);
 	
-	return managedObjectModel;
+	return result;
 }
 
 - (NSPersistentStoreCoordinator *)persistentStoreCoordinator
@@ -446,10 +450,13 @@ static NSMutableSet *databaseFileNames;
 	// This is a public method.
 	// It may be invoked on any thread/queue.
 	
-	dispatch_block_t block = ^{
+	__block NSPersistentStoreCoordinator *result = nil;
+	
+	dispatch_block_t block = ^{ @autoreleasepool {
 		
 		if (persistentStoreCoordinator)
 		{
+			result = persistentStoreCoordinator;
 			return;
 		}
 		
@@ -458,8 +465,6 @@ static NSMutableSet *databaseFileNames;
 		{
 			return;
 		}
-		
-		NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
 		
 		XMPPLogVerbose(@"%@: Creating persistentStoreCoordinator", [self class]);
 		
@@ -485,7 +490,8 @@ static NSMutableSet *databaseFileNames;
 			}
 			else
 			{
-				XMPPLogWarn(@"%@: Error creating persistentStoreCoordinator - Nil persistentStoreDirectory", [self class]);
+				XMPPLogWarn(@"%@: Error creating persistentStoreCoordinator - Nil persistentStoreDirectory",
+							[self class]);
 			}
 		}
 		else
@@ -501,15 +507,16 @@ static NSMutableSet *databaseFileNames;
 			}
 		}
 		
-		[pool drain];
-	};
+		result = persistentStoreCoordinator;
+		
+	}};
 	
 	if (dispatch_get_current_queue() == storageQueue)
 		block();
 	else
 		dispatch_sync(storageQueue, block);
 
-    return persistentStoreCoordinator;
+    return result;
 }
 
 - (NSManagedObjectContext *)managedObjectContext
@@ -523,7 +530,8 @@ static NSMutableSet *databaseFileNames;
 	// You should NOT give external classes access to the storageQueue! (Excluding subclasses obviously.)
 	// 
 	// When you want a managedObjectContext of your own (again, excluding subclasses),
-	// you should create your own using the public persistentStoreCoordinator.
+	// you can use the mainThreadManagedObjectContext (below),
+	// or you should create your own using the public persistentStoreCoordinator.
 	// 
 	// If you even comtemplate ignoring this warning,
 	// then you need to go read the documentation for core data,
@@ -545,13 +553,86 @@ static NSMutableSet *databaseFileNames;
 	{
 		XMPPLogVerbose(@"%@: Creating managedObjectContext", [self class]);
 		
-		managedObjectContext = [[NSManagedObjectContext alloc] init];
-		[managedObjectContext setPersistentStoreCoordinator:coordinator];
+		if ([NSManagedObjectContext instancesRespondToSelector:@selector(initWithConcurrencyType:)])
+			managedObjectContext =
+			    [[NSManagedObjectContext alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
+		else
+			managedObjectContext = [[NSManagedObjectContext alloc] init];
+		
+		managedObjectContext.persistentStoreCoordinator = coordinator;
+		managedObjectContext.undoManager = nil;
 		
 		[self didCreateManagedObjectContext];
 	}
 	
 	return managedObjectContext;
+}
+
+- (NSManagedObjectContext *)mainThreadManagedObjectContext
+{
+	// NSManagedObjectContext is NOT thread-safe.
+	// Therefore it is VERY VERY BAD to use this managedObjectContext outside the main thread.
+	// 
+	// You should NOT remove the assert statement below!
+	// 
+	// When you want a managedObjectContext of your own for non-main-thread use,
+	// you should create your own using the public persistentStoreCoordinator.
+	// 
+	// If you even comtemplate ignoring this warning,
+	// then you need to go read the documentation for core data,
+	// specifically the section entitled "Concurrency with Core Data".
+	// 
+	NSAssert(dispatch_get_current_queue() == dispatch_get_main_queue(), @"Context reserved for main thread only");
+	// 
+	// Do NOT remove the assert statment above!
+	// Read the comments above!
+	// 
+	
+	if (mainThreadManagedObjectContext)
+	{
+		return mainThreadManagedObjectContext;
+	}
+	
+	NSPersistentStoreCoordinator *coordinator = [self persistentStoreCoordinator];
+	if (coordinator)
+	{
+		XMPPLogVerbose(@"%@: Creating mainThreadManagedObjectContext", [self class]);
+		
+		if ([NSManagedObjectContext instancesRespondToSelector:@selector(initWithConcurrencyType:)])
+			mainThreadManagedObjectContext =
+			    [[NSManagedObjectContext alloc] initWithConcurrencyType:NSMainQueueConcurrencyType];
+		else
+			mainThreadManagedObjectContext = [[NSManagedObjectContext alloc] init];
+		
+		mainThreadManagedObjectContext.persistentStoreCoordinator = coordinator;
+		mainThreadManagedObjectContext.undoManager = nil;
+		
+		[[NSNotificationCenter defaultCenter] addObserver:self
+		                                         selector:@selector(managedObjectContextDidSave:)
+		                                             name:NSManagedObjectContextDidSaveNotification
+		                                           object:nil];
+		
+		// Todo: If we knew that our private managedObjectContext was going to be the only one writing to the database,
+		// then a small optimization would be to use it as the object when registering above.
+	}
+	
+	return mainThreadManagedObjectContext;
+}
+
+- (void)managedObjectContextDidSave:(NSNotification *)notification
+{
+	NSManagedObjectContext *sender = (NSManagedObjectContext *)[notification object];
+	
+	if ((sender != mainThreadManagedObjectContext) &&
+	    (sender.persistentStoreCoordinator == mainThreadManagedObjectContext.persistentStoreCoordinator))
+	{
+		XMPPLogVerbose(@"%@: %@ - Merging changes into mainThreadManagedObjectContext", THIS_FILE, THIS_METHOD);
+		
+		dispatch_async(dispatch_get_main_queue(), ^{
+			
+			[mainThreadManagedObjectContext mergeChangesFromContextDidSaveNotification:notification];
+		});
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -578,7 +659,11 @@ static NSMutableSet *databaseFileNames;
 	// called from maybeSave below, which already does this check.
 	
 	NSError *error = nil;
-	if (![[self managedObjectContext] save:&error])
+	if ([[self managedObjectContext] save:&error])
+	{
+		[self didSaveManagedObjectContext];
+	}
+	else
 	{
 		XMPPLogWarn(@"%@: Error saving - %@ %@", [self class], error, [error userInfo]);
 		
@@ -634,24 +719,19 @@ static NSMutableSet *databaseFileNames;
 	//          ^
 	
 	OSAtomicIncrement32(&pendingRequests);
-	dispatch_sync(storageQueue, ^{
-		NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+	dispatch_sync(storageQueue, ^{ @autoreleasepool {
 		
 		block();
 		
 		// Since this is a synchronous request, we want to return as quickly as possible.
 		// So we delay the maybeSave operation til later.
 		
-		dispatch_async(storageQueue, ^{
-			NSAutoreleasePool *innerPool = [[NSAutoreleasePool alloc] init];
+		dispatch_async(storageQueue, ^{ @autoreleasepool {
 			
 			[self maybeSave:OSAtomicDecrement32(&pendingRequests)];
-			
-			[innerPool drain];
-		});
+		}});
 		
-		[pool drain];
-	});
+	}});
 }
 
 - (void)scheduleBlock:(dispatch_block_t)block
@@ -669,14 +749,11 @@ static NSMutableSet *databaseFileNames;
 	//          ^
 	
 	OSAtomicIncrement32(&pendingRequests);
-	dispatch_async(storageQueue, ^{
-		NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+	dispatch_async(storageQueue, ^{ @autoreleasepool {
 		
 		block();
-		
 		[self maybeSave:OSAtomicDecrement32(&pendingRequests)];
-		[pool drain];
-	});
+	}});
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -690,21 +767,12 @@ static NSMutableSet *databaseFileNames;
 	if (databaseFileName)
 	{
 		[[self class] unregisterDatabaseFileName:databaseFileName];
-		[databaseFileName release];
 	}
-	
-	[myJidCache release];
 	
 	if (storageQueue)
 	{
 		dispatch_release(storageQueue);
 	}
-	
-	[managedObjectContext release];
-	[persistentStoreCoordinator release];
-	[managedObjectModel release];
-	
-	[super dealloc];
 }
 
 @end

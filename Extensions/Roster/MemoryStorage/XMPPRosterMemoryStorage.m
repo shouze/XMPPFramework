@@ -4,6 +4,10 @@
 #import "XMPPRosterMemoryStoragePrivate.h"
 #import "XMPPLogging.h"
 
+#if ! __has_feature(objc_arc)
+#warning This file must be compiled with ARC. Use -fobjc-arc flag (or convert project to ARC).
+#endif
+
 // Log levels: off, error, warn, info, verbose
 #if DEBUG
   static const int xmppLogLevel = XMPP_LOG_LEVEL_WARN; // | XMPP_LOG_FLAG_TRACE;
@@ -19,8 +23,7 @@
 
 @interface XMPPRosterMemoryStorage ()
 
-@property (assign, readwrite) XMPPRoster *parent;
-@property (readwrite) dispatch_queue_t parentQueue;
+@property (readonly) dispatch_queue_t parentQueue;
 
 @end
 
@@ -34,8 +37,8 @@
 {
 	if ((self = [super init]))
 	{
-		userClass = [XMPPUserMemoryStorage class];
-		resourceClass = [XMPPResourceMemoryStorage class];
+		userClass = [XMPPUserMemoryStorageObject class];
+		resourceClass = [XMPPResourceMemoryStorageObject class];
 		
 		roster = [[NSMutableDictionary alloc] init];
 	}
@@ -47,12 +50,17 @@
 	NSParameterAssert(aParent != nil);
 	NSParameterAssert(queue != NULL);
 	
-	if ((parent == nil) && (parentQueue == NULL))
+	@synchronized(self)
 	{
-		self.parent = aParent;
-		self.parentQueue = queue;
-		
-		return YES;
+		if ((parent == nil) && (parentQueue == NULL))
+		{
+			parent = aParent;
+			parentQueue = queue;
+			
+			dispatch_retain(parentQueue);
+			
+			return YES;
+		}
 	}
 	
 	return NO;
@@ -63,45 +71,37 @@
 	if (parentQueue)
 		dispatch_release(parentQueue);
 	
-	[roster release];
-	[myJID release];
-	[myUser release];
-	[super dealloc];
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 #pragma mark Properties
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-@synthesize parent;
 @synthesize userClass;
 @synthesize resourceClass;
 
-- (dispatch_queue_t)parentQueue
+- (XMPPRoster *)parent
 {
-	dispatch_queue_t result = NULL;
+	XMPPRoster *result = nil;
 	
-	@synchronized(self)
+	@synchronized(self) // synchronized with configureWithParent:queue:
 	{
-		result = parentQueue;
+		result = parent;
 	}
 	
 	return result;
 }
 
-- (void)setParentQueue:(dispatch_queue_t)queue
+- (dispatch_queue_t)parentQueue
 {
-	@synchronized(self)
+	dispatch_queue_t result = NULL;
+	
+	@synchronized(self) // synchronized with configureWithParent:queue:
 	{
-		if (parentQueue != queue)
-		{
-			if (parentQueue)
-				dispatch_release(parentQueue);
-			
-			parentQueue = queue;
-			dispatch_retain(parentQueue);
-		}
+		result = parentQueue;
 	}
+	
+	return result;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -113,11 +113,11 @@
 	return (GCDMulticastDelegate <XMPPRosterMemoryStorageDelegate> *)[parent multicastDelegate];
 }
 
-- (id <XMPPUser>)_userForJID:(XMPPJID *)jid
+- (XMPPUserMemoryStorageObject *)_userForJID:(XMPPJID *)jid
 {
 	AssertPrivateQueue();
 	
-	XMPPUserMemoryStorage *result = [roster objectForKey:[jid bareJID]];
+	XMPPUserMemoryStorageObject *result = [roster objectForKey:[jid bareJID]];
 	
 	if (result)
 	{
@@ -135,12 +135,12 @@
 	return nil;
 }
 
-- (id <XMPPResource>)_resourceForJID:(XMPPJID *)jid
+- (XMPPResourceMemoryStorageObject *)_resourceForJID:(XMPPJID *)jid
 {
 	AssertPrivateQueue();
 	
-	XMPPUserMemoryStorage *user = (XMPPUserMemoryStorage *)[self _userForJID:jid];
-	return [user resourceForJID:jid];
+	XMPPUserMemoryStorageObject *user = [self _userForJID:jid];
+	return (XMPPResourceMemoryStorageObject *)[user resourceForJID:jid];
 }
 
 - (NSArray *)_unsortedUsers
@@ -255,7 +255,7 @@
 #pragma mark Roster Management
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-- (id <XMPPUser>)myUser
+- (XMPPUserMemoryStorageObject *)myUser
 {
 	// This is a public method, so it may be invoked on any thread/queue.
 	
@@ -271,17 +271,17 @@
 	}
 	else
 	{
-		__block XMPPUserMemoryStorage *result;
+		__block XMPPUserMemoryStorageObject *result;
 		
 		dispatch_sync(parentQueue, ^{
 			result = [myUser copy];
 		});
 		
-		return [result autorelease];
+		return result;
 	}
 }
 
-- (id <XMPPResource>)myResource
+- (XMPPResourceMemoryStorageObject *)myResource
 {
 	// This is a public method, so it may be invoked on any thread/queue.
 	
@@ -293,22 +293,23 @@
 	
 	if (dispatch_get_current_queue() == parentQueue)
 	{
-		return [myUser resourceForJID:myJID];
+		return (XMPPResourceMemoryStorageObject *)[myUser resourceForJID:myJID];
 	}
 	else
 	{
-		__block XMPPResourceMemoryStorage *result;
+		__block XMPPResourceMemoryStorageObject *result;
 		
 		dispatch_sync(parentQueue, ^{
-			XMPPResourceMemoryStorage *resource = (XMPPResourceMemoryStorage *)[myUser resourceForJID:myJID];
+			XMPPResourceMemoryStorageObject *resource =
+			    (XMPPResourceMemoryStorageObject *)[myUser resourceForJID:myJID];
 			result = [resource copy];
 		});
 		
-		return [result autorelease];
+		return result;
 	}
 }
 
-- (id <XMPPUser>)userForJID:(XMPPJID *)jid
+- (XMPPUserMemoryStorageObject *)userForJID:(XMPPJID *)jid
 {
 	// This is a public method, so it may be invoked on any thread/queue.
 	
@@ -324,22 +325,20 @@
 	}
 	else
 	{
-		__block XMPPUserMemoryStorage *result;
+		__block XMPPUserMemoryStorageObject *result;
 		
-		dispatch_sync(parentQueue, ^{
-			NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+		dispatch_sync(parentQueue, ^{ @autoreleasepool {
 			
-			XMPPUserMemoryStorage *user = (XMPPUserMemoryStorage *)[self _userForJID:jid];
+			XMPPUserMemoryStorageObject *user = [self _userForJID:jid];
 			result = [user copy];
 			
-			[pool release];
-		});
+		}});
 		
-		return [result autorelease];
+		return result;
 	}
 }
 
-- (id <XMPPResource>)resourceForJID:(XMPPJID *)jid
+- (XMPPResourceMemoryStorageObject *)resourceForJID:(XMPPJID *)jid
 {
 	// This is a public method, so it may be invoked on any thread/queue.
 	
@@ -355,18 +354,16 @@
 	}
 	else
 	{
-		__block XMPPResourceMemoryStorage *result;
+		__block XMPPResourceMemoryStorageObject *result;
 		
-		dispatch_sync(parentQueue, ^{
-			NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+		dispatch_sync(parentQueue, ^{ @autoreleasepool {
 			
-			XMPPResourceMemoryStorage *resource = (XMPPResourceMemoryStorage *)[self _resourceForJID:jid];
+			XMPPResourceMemoryStorageObject *resource = [self _resourceForJID:jid];
 			result = [resource copy];
 			
-			[pool release];
-		});
+		}});
 		
-		return [result autorelease];
+		return result;
 	}
 }
 
@@ -388,17 +385,15 @@
 	{
 		__block NSArray *result;
 		
-		dispatch_sync(parentQueue, ^{
-			NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+		dispatch_sync(parentQueue, ^{ @autoreleasepool {
 			
 			NSArray *temp = [self _sortedUsersByName];
 			
 			result = [[NSArray alloc] initWithArray:temp copyItems:YES];
 			
-			[pool release];
-		});
+		}});
 		
-		return [result autorelease];
+		return result;
 	}
 }
 
@@ -420,17 +415,15 @@
 	{
 		__block NSArray *result;
 		
-		dispatch_sync(parentQueue, ^{
-			NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+		dispatch_sync(parentQueue, ^{ @autoreleasepool {
 			
 			NSArray *temp = [self _sortedUsersByAvailabilityName];
 			
 			result = [[NSArray alloc] initWithArray:temp copyItems:YES];
 			
-			[pool release];
-		});
+		}});
 		
-		return [result autorelease];
+		return result;
 	}
 }
 
@@ -452,17 +445,14 @@
 	{
 		__block NSArray *result;
 		
-		dispatch_sync(parentQueue, ^{
-			NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+		dispatch_sync(parentQueue, ^{ @autoreleasepool {
 			
 			NSArray *temp = [self _sortedAvailableUsersByName];
-			
 			result = [[NSArray alloc] initWithArray:temp copyItems:YES];
 			
-			[pool release];
-		});
+		}});
 		
-		return [result autorelease];
+		return result;
 	}
 }
 
@@ -484,17 +474,14 @@
 	{
 		__block NSArray *result;
 		
-		dispatch_sync(parentQueue, ^{
-			NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+		dispatch_sync(parentQueue, ^{ @autoreleasepool {
 			
 			NSArray *temp = [self _sortedUnavailableUsersByName];
-			
 			result = [[NSArray alloc] initWithArray:temp copyItems:YES];
 			
-			[pool release];
-		});
+		}});
 		
-		return [result autorelease];
+		return result;
 	}
 }
 
@@ -516,17 +503,14 @@
 	{
 		__block NSArray *result;
 		
-		dispatch_sync(parentQueue, ^{
-			NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+		dispatch_sync(parentQueue, ^{ @autoreleasepool {
 			
 			NSArray *temp = [self _unsortedUsers];
-			
 			result = [[NSArray alloc] initWithArray:temp copyItems:YES];
 			
-			[pool release];
-		});
+		}});
 		
-		return [result autorelease];
+		return result;
 	}
 }
 
@@ -548,17 +532,14 @@
 	{
 		__block NSArray *result;
 		
-		dispatch_sync(parentQueue, ^{
-			NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+		dispatch_sync(parentQueue, ^{ @autoreleasepool {
 			
 			NSArray *temp = [self _unsortedAvailableUsers];
-			
 			result = [[NSArray alloc] initWithArray:temp copyItems:YES];
 			
-			[pool release];
-		});
+		}});
 		
-		return [result autorelease];
+		return result;
 	}
 }
 
@@ -580,17 +561,14 @@
 	{
 		__block NSArray *result;
 		
-		dispatch_sync(parentQueue, ^{
-			NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+		dispatch_sync(parentQueue, ^{ @autoreleasepool {
 			
 			NSArray *temp = [self _unsortedUnavailableUsers];
-			
 			result = [[NSArray alloc] initWithArray:temp copyItems:YES];
 			
-			[pool release];
-		});
+		}});
 		
-		return [result autorelease];
+		return result;
 	}
 }
 
@@ -612,17 +590,14 @@
 	{
 		__block NSArray *result;
 		
-		dispatch_sync(parentQueue, ^{
-			NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+		dispatch_sync(parentQueue, ^{ @autoreleasepool {
 			
 			NSArray *temp = [self _sortedResources:includeResourcesForMyUserExcludingMyself];
-			
 			result = [[NSArray alloc] initWithArray:temp copyItems:YES];
 			
-			[pool release];
-		});
+		}});
 		
-		return [result autorelease];
+		return result;
 	}
 }
 
@@ -637,10 +612,8 @@
 	
 	isRosterPopulation = YES;
 	
-	[myJID release];
-	myJID = [parent.xmppStream.myJID retain];
+	myJID = parent.xmppStream.myJID;
 	
-	[myUser release];
 	myUser = [[self.userClass alloc] initWithJID:myJID];
 }
 
@@ -665,10 +638,10 @@
 	
 	if (isRosterPopulation)
 	{
-		XMPPUserMemoryStorage *newUser = (XMPPUserMemoryStorage *)[[self.userClass alloc] initWithItem:item];
+		XMPPUserMemoryStorageObject *newUser =
+		    (XMPPUserMemoryStorageObject *)[[self.userClass alloc] initWithItem:item];
 		
 		[roster setObject:newUser forKey:jid];
-		[newUser release];
 		
 		XMPPLogVerbose(@"roster(%lu): %@", (unsigned long)[roster count], roster);
 	}
@@ -678,7 +651,7 @@
 		
 		if ([subscription isEqualToString:@"remove"])
 		{
-			XMPPUserMemoryStorage *user = [[[roster objectForKey:jid] retain] autorelease];
+			XMPPUserMemoryStorageObject *user = [roster objectForKey:jid];
 			if (user)
 			{
 				[roster removeObjectForKey:jid];
@@ -691,7 +664,7 @@
 		}
 		else
 		{
-			XMPPUserMemoryStorage *user = [roster objectForKey:jid];
+			XMPPUserMemoryStorageObject *user = [roster objectForKey:jid];
 			if (user)
 			{
 				[user updateWithItem:item];
@@ -703,15 +676,16 @@
 			}
 			else
 			{
-				XMPPUserMemoryStorage *newUser = (XMPPUserMemoryStorage *)[[self.userClass alloc] initWithItem:item];
+				XMPPUserMemoryStorageObject *newUser =
+				    (XMPPUserMemoryStorageObject *)[[self.userClass alloc] initWithItem:item];
 				
 				[roster setObject:newUser forKey:jid];
-				[newUser autorelease];
 				
 				XMPPLogVerbose(@"roster(%lu): %@", (unsigned long)[roster count], roster);
 				
 				[[self multicastDelegate] xmppRoster:self didAddUser:newUser];
 				[[self multicastDelegate] xmppRosterDidChange:self];
+				
 			}
 		}
 	}
@@ -724,27 +698,37 @@
 	
 	int change = XMPP_USER_NO_CHANGE;
 	
-	XMPPUserMemoryStorage *user = nil;
-	XMPPResourceMemoryStorage *resource = nil;
+	XMPPUserMemoryStorageObject *user = nil;
+	XMPPResourceMemoryStorageObject *resource = nil;
 	
 	XMPPJID *jidKey = [[presence from] bareJID];
 	
 	user = [roster objectForKey:jidKey];
-	if (user)
+	if (user == nil)
 	{
-		change = [user updateWithPresence:presence resourceClass:self.resourceClass andGetResource:&resource];
-	}
-	else
-	{
-		// Not a presence element for anyone in our roster.
-		// Is it a presence element for our user (either our resource or another resource)?
+		// Not a presence element from anyone in our roster (that we know of).
 		
 		if ([[myJID bareJID] isEqualToJID:jidKey])
 		{
+			// It's a presence element for our user, either our resource or another resource.
+			
 			user = myUser;
-			change = [myUser updateWithPresence:presence resourceClass:self.resourceClass andGetResource:&resource];
+		}
+		else
+		{
+			// Unknown user (this is the first time we've encountered them).
+			// This happens if the roster is in rosterlessOperation mode.
+			
+			user = (XMPPUserMemoryStorageObject *)[[self.userClass alloc] initWithJID:jidKey];
+			
+			[roster setObject:user forKey:jidKey];
+			
+			[[self multicastDelegate] xmppRoster:self didAddUser:user];
+			[[self multicastDelegate] xmppRosterDidChange:self];
 		}
 	}
+	
+	change = [user updateWithPresence:presence resourceClass:self.resourceClass andGetResource:&resource];
 	
 	XMPPLogVerbose(@"roster(%lu): %@", (unsigned long)[roster count], roster);
 	
@@ -767,7 +751,7 @@
 	AssertParentQueue();
 	
 	XMPPJID *jidKey = [jid bareJID];
-	XMPPUserMemoryStorage *rosterUser = [roster objectForKey:jidKey];
+	XMPPUserMemoryStorageObject *rosterUser = [roster objectForKey:jidKey];
 	
 	return (rosterUser != nil);
 }
@@ -782,7 +766,7 @@
 	AssertParentQueue();
 	
 	XMPPJID *jidKey = [jid bareJID];
-	XMPPUserMemoryStorage *rosterUser = [roster objectForKey:jidKey];
+	XMPPUserMemoryStorageObject *rosterUser = [roster objectForKey:jidKey];
 	
 	if (rosterUser)
 	{
@@ -795,7 +779,7 @@
 	XMPPLogTrace();
 	AssertParentQueue();
 	
-	for (XMPPUserMemoryStorage *user in [roster objectEnumerator])
+	for (XMPPUserMemoryStorageObject *user in [roster objectEnumerator])
 	{
 		[user clearAllResources];
 	}
@@ -810,7 +794,6 @@
 	
 	[roster removeAllObjects];
 	
-	[myUser release];
 	myUser = nil;
 	
 	[[self multicastDelegate] xmppRosterDidChange:self];

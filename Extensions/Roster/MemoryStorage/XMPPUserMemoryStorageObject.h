@@ -6,16 +6,16 @@
   #import <Cocoa/Cocoa.h>
 #endif
 
-@class XMPPResourceMemoryStorage;
+@class XMPPResourceMemoryStorageObject;
 
 
-@interface XMPPUserMemoryStorage : NSObject <XMPPUser, NSCopying, NSCoding>
+@interface XMPPUserMemoryStorageObject : NSObject <XMPPUser, NSCopying, NSCoding>
 {
 	XMPPJID *jid;
 	NSMutableDictionary *itemAttributes;
 	
 	NSMutableDictionary *resources;
-	XMPPResourceMemoryStorage *primaryResource;
+	XMPPResourceMemoryStorageObject *primaryResource;
 	
 #if TARGET_OS_IPHONE
 	UIImage *photo;
@@ -51,19 +51,20 @@
  * and we'll save the the user photos after they've been downloaded.
 **/
 #if TARGET_OS_IPHONE
-@property (nonatomic, retain, readonly) UIImage *photo;
+@property (nonatomic, strong, readonly) UIImage *photo;
 #else
-@property (nonatomic, retain, readonly) NSImage *photo;
+@property (nonatomic, strong, readonly) NSImage *photo;
 #endif
 
 /**
- * 
+ * Simple comparison methods.
 **/
 
-- (NSComparisonResult)compareByName:(XMPPUserMemoryStorage *)another;
-- (NSComparisonResult)compareByName:(XMPPUserMemoryStorage *)another options:(NSStringCompareOptions)mask;
+- (NSComparisonResult)compareByName:(XMPPUserMemoryStorageObject *)another;
+- (NSComparisonResult)compareByName:(XMPPUserMemoryStorageObject *)another options:(NSStringCompareOptions)mask;
 
-- (NSComparisonResult)compareByAvailabilityName:(XMPPUserMemoryStorage *)another;
-- (NSComparisonResult)compareByAvailabilityName:(XMPPUserMemoryStorage *)another options:(NSStringCompareOptions)mask;
+- (NSComparisonResult)compareByAvailabilityName:(XMPPUserMemoryStorageObject *)another;
+- (NSComparisonResult)compareByAvailabilityName:(XMPPUserMemoryStorageObject *)another
+                                        options:(NSStringCompareOptions)mask;
 
 @end

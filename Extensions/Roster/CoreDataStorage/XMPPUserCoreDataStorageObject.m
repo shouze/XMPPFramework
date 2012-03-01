@@ -5,15 +5,20 @@
 #import "XMPPGroupCoreDataStorageObject.h"
 #import "NSNumber+XMPP.h"
 
+#if ! __has_feature(objc_arc)
+#warning This file must be compiled with ARC. Use -fobjc-arc flag (or convert project to ARC).
+#endif
+
+
 @interface XMPPUserCoreDataStorageObject ()
 
-@property(nonatomic,retain) XMPPJID *primitiveJid;
-@property(nonatomic,retain) NSString *primitiveJidStr;
+@property(nonatomic,strong) XMPPJID *primitiveJid;
+@property(nonatomic,strong) NSString *primitiveJidStr;
 
-@property(nonatomic,retain) NSString *primitiveDisplayName;
+@property(nonatomic,strong) NSString *primitiveDisplayName;
 @property(nonatomic,assign) NSInteger primitiveSection;
-@property(nonatomic,retain) NSString *primitiveSectionName;
-@property(nonatomic,retain) NSNumber *primitiveSectionNum;
+@property(nonatomic,strong) NSString *primitiveSectionName;
+@property(nonatomic,strong) NSNumber *primitiveSectionNum;
 
 @end
 
@@ -179,6 +184,30 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 + (id)insertInManagedObjectContext:(NSManagedObjectContext *)moc
+                           withJID:(XMPPJID *)jid
+                  streamBareJidStr:(NSString *)streamBareJidStr
+{
+	if (jid == nil)
+	{
+		NSLog(@"XMPPUserCoreDataStorageObject: invalid jid (nil)");
+		return nil;
+	}
+	
+	XMPPUserCoreDataStorageObject *newUser;
+	newUser = [NSEntityDescription insertNewObjectForEntityForName:@"XMPPUserCoreDataStorageObject"
+	                                        inManagedObjectContext:moc];
+	
+	newUser.streamBareJidStr = streamBareJidStr;
+	
+	newUser.jid = jid;
+	newUser.nickname = nil;
+	
+	newUser.displayName = [jid bare];
+	
+	return newUser;
+}
+
++ (id)insertInManagedObjectContext:(NSManagedObjectContext *)moc
                           withItem:(NSXMLElement *)item
                   streamBareJidStr:(NSString *)streamBareJidStr
 {
@@ -204,26 +233,26 @@
 
 - (void)updateGroupsWithItem:(NSXMLElement *)item
 {
-  XMPPGroupCoreDataStorageObject *group = nil;
-  
-  // clear existing group memberships first
-  if ([self.groups count] > 0) {
-    [self removeGroups:self.groups];
-  }
-  
-  NSArray *groupItems = [item elementsForName:@"group"];
-  NSString *groupName = nil;
-  
-  for (NSXMLElement *groupElement in groupItems) {
-    groupName = [groupElement stringValue];
-    
-    group = [XMPPGroupCoreDataStorageObject fetchOrInsertGroupName:groupName 
-                                            inManagedObjectContext:[self managedObjectContext]];
-    
-    if (group != nil) {
-      [self addGroupsObject:group];
-    }
-  }
+	XMPPGroupCoreDataStorageObject *group = nil;
+
+	// clear existing group memberships first
+	if ([self.groups count] > 0) {
+		[self removeGroups:self.groups];
+	}
+
+	NSArray *groupItems = [item elementsForName:@"group"];
+	NSString *groupName = nil;
+
+	for (NSXMLElement *groupElement in groupItems) {
+		groupName = [groupElement stringValue];
+
+		group = [XMPPGroupCoreDataStorageObject fetchOrInsertGroupName:groupName 
+		                                        inManagedObjectContext:[self managedObjectContext]];
+
+		if (group != nil) {
+			[self addGroupsObject:group];
+		}
+	}
 }
 
 - (void)updateWithItem:(NSXMLElement *)item
@@ -244,8 +273,8 @@
 	
 	self.subscription = [item attributeStringValueForName:@"subscription"];
 	self.ask = [item attributeStringValueForName:@"ask"];
-  
-  [self updateGroupsWithItem:item];
+	
+	[self updateGroupsWithItem:item];
 }
 
 - (void)recalculatePrimaryResource
@@ -423,26 +452,26 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 + (NSSet *)keyPathsForValuesAffectingJid {
-  // If the jidStr changes, the jid may change as well.
-  return [NSSet setWithObject:@"jidStr"];
+	// If the jidStr changes, the jid may change as well.
+	return [NSSet setWithObject:@"jidStr"];
 }
 
 + (NSSet *)keyPathsForValuesAffectingIsOnline {
-    return [NSSet setWithObject:@"primaryResource"];
+	return [NSSet setWithObject:@"primaryResource"];
 }
 
 + (NSSet *)keyPathsForValuesAffectingSection {
-  // If the value of sectionNum changes, the section may change as well.
-  return [NSSet setWithObject:@"sectionNum"];
+	// If the value of sectionNum changes, the section may change as well.
+	return [NSSet setWithObject:@"sectionNum"];
 }
 
 + (NSSet *)keyPathsForValuesAffectingSectionName {
-  // If the value of displayName changes, the sectionName may change as well.
-  return [NSSet setWithObject:@"displayName"];
+	// If the value of displayName changes, the sectionName may change as well.
+	return [NSSet setWithObject:@"displayName"];
 }
 
 + (NSSet *)keyPathsForValuesAffectingAllResources {
-  return [NSSet setWithObject:@"resources"];
+	return [NSSet setWithObject:@"resources"];
 }
 
 @end

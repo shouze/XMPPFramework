@@ -32,8 +32,9 @@
 **/
 + (XMPPRosterCoreDataStorage *)sharedInstance;
 
+
 /* Inherited from XMPPCoreDataStorage
- * Please see the XMPPCoreDataStorage header file for more information.
+ * Please see the XMPPCoreDataStorage header file for extensive documentation.
  
 - (id)initWithDatabaseFilename:(NSString *)databaseFileName;
 - (id)initWithInMemoryStore;
@@ -44,6 +45,8 @@
 
 @property (readonly) NSManagedObjectModel *managedObjectModel;
 @property (readonly) NSPersistentStoreCoordinator *persistentStoreCoordinator;
+
+@property (readonly) NSManagedObjectContext *mainThreadManagedObjectContext;
  
 */
 
